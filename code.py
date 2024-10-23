@@ -4,8 +4,8 @@
 # ΒΑΣΙΛΕΙΟΣ ΣΙΔΕΡΗΣ <ice20390209@uniwa.gr>
 
 # Definitions
-MOTOR_MAX = 32000  # Do not boost more than this as to not trigger overcurrent
-JOLT_SPD = 10000
+MOTOR_MAX = 9830  # Do not boost more than this as to not trigger overcurrent
+JOLT_SPD = 0
 JOLT_TIME = 0.1
 DEBUG = True
 
@@ -43,6 +43,13 @@ fl = pwmio.PWMOut(board.IO6, frequency=5000, duty_cycle=65535)
 fr = pwmio.PWMOut(board.IO5, frequency=5000, duty_cycle=65535)
 bl = pwmio.PWMOut(board.IO4, frequency=5000, duty_cycle=65535)
 br = pwmio.PWMOut(board.IO3, frequency=5000, duty_cycle=65535)
+
+# Last set state
+fls = 65535
+frs = 65535
+bls = 65535
+brs = 65535
+
 # 65535 is stopped, 0 is max
 
 
@@ -51,16 +58,29 @@ def _sm(right: bool, reverse: bool, value: int) -> None:
     """
     Backend function that actually does the motor control.
     """
+    global fls, frs, bls, brs
     if not right:
         if reverse:
             bl.duty_cycle = value
+            bls = value
+            fl.duty_cycle = 65535
+            fls = 65535
         else:
+            bl.duty_cycle = 65535
+            bls = 65535
             fl.duty_cycle = value
+            fls = value
     else:
         if reverse:
+            fr.duty_cycle = 65535
+            frs = value
             br.duty_cycle = value
+            brs = value
         else:
             fr.duty_cycle = value
+            frs = value
+            br.duty_cycle = 65535
+            brs = 65535
 
 
 def move(right: bool, percent: int = 0) -> None:
@@ -112,6 +132,22 @@ def jolt(right: bool, reverse: bool) -> None:
     time.sleep(JOLT_TIME)
     _sm(right, reverse, 65535)
     snx(2)
+
+
+def is_stopped() -> bool:
+    return fls == frs == bls == brs == 65535
+
+
+def forward(spd: int = 100) -> None:
+    if is_stopped():
+        jolt()
+    move(False, spd)
+    move(True, spd)
+
+
+def stop() -> None:
+    move(False, 0)
+    move(True, 0)
 
 
 # Wi-Fi handling
@@ -268,18 +304,18 @@ try:
         dat = terminal_cmd()
         if len(dat):
             cmd = dat[0].lower()
-            if cmd == "reload":
+            if cmd in ["reload", "rel"]:
                 import supervisor
 
                 if telnet is not None:
                     telnet.disconnect()
                     telnet.deinit()
                 supervisor.reload()
-            elif cmd == "reset":
+            elif cmd in ["reset", "res", "rst"]:
                 import microcontroller
 
                 microcontroller.reset()
-            elif cmd == "set":
+            elif cmd in ["set", "s"]:
                 try:
                     motor = int(dat[1])
                     spd = int(dat[2])
@@ -288,7 +324,11 @@ try:
                         move(False, spd)
                 except:
                     terminal_write("Invalid arguments.\n\rExample: `set 0 100`")
-            elif cmd == "quit":
+            elif cmd in ["view", "v"]:
+                terminal_write(
+                    f"Front Left: {fls}\n\rFront Right: {frs}\n\rBack Left: {bls}\n\rBack Right: {brs}\n\r"
+                )
+            elif cmd in ["quit", "q"]:
                 terminal_write("Exiting..\n\r")
                 break
             else:
