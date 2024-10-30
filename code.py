@@ -4,9 +4,12 @@
 # ΒΑΣΙΛΕΙΟΣ ΣΙΔΕΡΗΣ <ice20390209@uniwa.gr>
 
 # Definitions
-MOTOR_MAX = 9830  # Do not boost more than this as to not trigger overcurrent
+MOTOR_MAX = 32768  # Do not boost more than this as to not trigger overcurrent
+MOTOR_FREQ = 10000
 JOLT_SPD = 0
 JOLT_TIME = 0.1
+RAMP_INC = 1024
+RAMP_TICK = 0.001
 DEBUG = True
 
 # Load core libraries
@@ -14,6 +17,8 @@ import board, digitalio, pwmio, time, wifi
 from usb_cdc import console as usbcon
 from socketpool import SocketPool
 from neopixel_write import neopixel_write
+import microcontroller
+import espnow
 
 # Init neopixel
 nx = digitalio.DigitalInOut(board.NEOPIXEL)
@@ -37,12 +42,23 @@ def snx(state: int) -> None:
 
 snx(3)
 
+# Iniitialize espNOW
+
+espn = espnow.ESPNow()
+
+# T-Watch-S3 MAC f0:f5:bd:43:39:98
+espn.peers.append(espnow.Peer(mac=b"4\xb7\xda[r\xfc"))
+
+# WaveShare ESP32-S3-Zero Red MAC 34:b7:da:5b:72:fc
+espn.peers.append(espnow.Peer(mac=b"\xf0\xf5\xbdC9\x98"))
+
+
 # Initialize motors
 
-fl = pwmio.PWMOut(board.IO6, frequency=5000, duty_cycle=65535)
-fr = pwmio.PWMOut(board.IO5, frequency=5000, duty_cycle=65535)
-bl = pwmio.PWMOut(board.IO4, frequency=5000, duty_cycle=65535)
-br = pwmio.PWMOut(board.IO3, frequency=5000, duty_cycle=65535)
+fl = pwmio.PWMOut(board.IO6, frequency=MOTOR_FREQ, duty_cycle=65535)
+fr = pwmio.PWMOut(board.IO5, frequency=MOTOR_FREQ, duty_cycle=65535)
+bl = pwmio.PWMOut(board.IO4, frequency=MOTOR_FREQ, duty_cycle=65535)
+br = pwmio.PWMOut(board.IO3, frequency=MOTOR_FREQ, duty_cycle=65535)
 
 # Last set state
 fls = 65535
@@ -56,31 +72,88 @@ brs = 65535
 # Define motor functions
 def _sm(right: bool, reverse: bool, value: int) -> None:
     """
-    Backend function that actually does the motor control.
+    Ramping speed controller. Madly optimized.
     """
     global fls, frs, bls, brs
     if not right:
         if reverse:
-            bl.duty_cycle = value
-            bls = value
             fl.duty_cycle = 65535
             fls = 65535
+            while value < bls:
+                bls -= RAMP_INC
+                if DEBUG:
+                    terminal_write("Ramping.. " + str(bls) + "\n\r")
+                bl.duty_cycle = bls
+                time.sleep(RAMP_TICK)
+            while value > bls:
+                bls += RAMP_INC
+                if DEBUG:
+                    terminal_write("Ramping.. " + str(bls) + "\n\r")
+                bl.duty_cycle = bls
+                time.sleep(RAMP_TICK)
         else:
             bl.duty_cycle = 65535
             bls = 65535
-            fl.duty_cycle = value
-            fls = value
+            while value < fls:
+                fls -= RAMP_INC
+                if DEBUG:
+                    terminal_write("Ramping.. " + str(fls) + "\n\r")
+                fl.duty_cycle = fls
+                time.sleep(RAMP_TICK)
+            while value > fls:
+                fls += RAMP_INC
+                if DEBUG:
+                    terminal_write("Ramping.. " + str(fls) + "\n\r")
+                fl.duty_cycle = fls
+                time.sleep(RAMP_TICK)
     else:
         if reverse:
             fr.duty_cycle = 65535
-            frs = value
-            br.duty_cycle = value
-            brs = value
+            frs = 65535
+            while value < brs:
+                brs -= RAMP_INC
+                if DEBUG:
+                    terminal_write("Ramping.. " + str(brs) + "\n\r")
+                br.duty_cycle = brs
+                time.sleep(RAMP_TICK)
+            while value > brs:
+                brs += RAMP_INC
+                if DEBUG:
+                    terminal_write("Ramping.. " + str(brs) + "\n\r")
+                br.duty_cycle = brs
+                time.sleep(RAMP_TICK)
         else:
-            fr.duty_cycle = value
-            frs = value
             br.duty_cycle = 65535
             brs = 65535
+            while value < frs:
+                frs -= RAMP_INC
+                if DEBUG:
+                    terminal_write("Ramping.. " + str(frs) + "\n\r")
+                fr.duty_cycle = frs
+                time.sleep(RAMP_TICK)
+            while value > frs:
+                frs += RAMP_INC
+                if DEBUG:
+                    terminal_write("Ramping.. " + str(frs) + "\n\r")
+                fr.duty_cycle = frs
+                time.sleep(RAMP_TICK)
+
+
+def stop(right: bool) -> None:
+    """
+    Stop the specified motor immediately.
+    """
+    global fls, frs, bls, brs
+    if right:
+        fr.duty_cycle = 65535
+        frs = 65535
+        br.duty_cycle = 65535
+        brs = 65535
+    else:
+        fl.duty_cycle = 65535
+        fls = 65535
+        bl.duty_cycle = 65535
+        bls = 65535
 
 
 def move(right: bool, percent: int = 0) -> None:
@@ -143,11 +216,6 @@ def forward(spd: int = 100) -> None:
         jolt()
     move(False, spd)
     move(True, spd)
-
-
-def stop() -> None:
-    move(False, 0)
-    move(True, 0)
 
 
 # Wi-Fi handling
@@ -254,6 +322,7 @@ def terminal_write(data: str) -> None:
         telnet.write(data.encode("UTF-8"))
     if usbcon.connected:
         usbcon.write(data.encode("UTF-8"))
+    espn.send(data)
 
 
 def terminal_cmd() -> list:
@@ -312,8 +381,6 @@ try:
                     telnet.deinit()
                 supervisor.reload()
             elif cmd in ["reset", "res", "rst"]:
-                import microcontroller
-
                 microcontroller.reset()
             elif cmd in ["set", "s"]:
                 try:
@@ -323,14 +390,20 @@ try:
                     if motor == 2:  # Do both
                         move(False, spd)
                 except:
-                    terminal_write("Invalid arguments.\n\rExample: `set 0 100`")
+                    terminal_write("Invalid arguments.\n\rExample: `set 0 100`\n\r")
             elif cmd in ["view", "v"]:
                 terminal_write(
                     f"Front Left: {fls}\n\rFront Right: {frs}\n\rBack Left: {bls}\n\rBack Right: {brs}\n\r"
                 )
+            elif cmd in ["stop", "st"]:
+                stop(False)
+                stop(True)
+                terminal_write("Stopped!\n\r")
             elif cmd in ["quit", "q"]:
                 terminal_write("Exiting..\n\r")
                 break
+            elif cmd in ["temp", "t"]:
+                terminal_write(str(microcontroller.cpu.temperature) + "℃\n\r")
             else:
                 terminal_write("Invalid command!\n\r")
 except Exception as err:
@@ -342,6 +415,4 @@ except Exception as err:
         print_exception(err)
     else:
         snx(5)
-        import microcontroller
-
         microcontroller.reset()
