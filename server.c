@@ -27,8 +27,13 @@ typedef struct {
 
 Client clients[MAX_CLIENTS];
 
-int client_count = 0;
-int has_master = 0;
+typedef struct {
+    Client *clients;
+    uint8_t *count;
+    uint8_t self;
+} Args;
+
+uint8_t client_count = 0;
 
 pthread_mutex_t client_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -50,73 +55,113 @@ Client *get_client_by_ip(const char *ip) {
 }
 
 void *handle_client(void *arg) {
-    Client client = *(Client *)arg;
+    Args *args = (Args *)arg;
+    Client *client = &(args->clients[args->self]);
     char buffer[BUFFER_SIZE];
     int bytes_received;
 
-    printf("Client connected: %s\n", client.ip);
+    printf("Client connected: %s\n", client->ip);
 
-    while ((bytes_received = recv(client.socket_fd, buffer, BUFFER_SIZE - 1, 0)) > 0) {
+    while ((bytes_received = recv(client->socket_fd, buffer, BUFFER_SIZE - 1, 0)) > 0) {
         buffer[bytes_received] = '\0';
-        printf("Received from %s: %s\n", client.ip, buffer);
+        printf("Received from %s: %s\n", client->ip, buffer);
 
         char target_ip[INET_ADDRSTRLEN], command[BUFFER_SIZE], data[BUFFER_SIZE];
         if (sscanf(buffer, "[%15[^]]] %s %[^\n]", target_ip, command, data) >= 2) {
-            if (client.state == UNAUTHENTICATED) {
+            if (client->state == UNAUTHENTICATED) {
                 if (strcmp(target_ip, "0.0.0.0") == 0 && strcmp(command, "slave") == 0) {
-                    client.state = SLAVE;
-                    printf("Client %s authenticated as SLAVE\n", client.ip);
+                    client->state = SLAVE;
+                    printf("Client %s authenticated as SLAVE\n", client->ip);
                 } else if (strcmp(target_ip, "0.0.0.0") == 0 && strcmp(command, "admin") == 0) {
-                    client.state = ADMIN;
-                    printf("Client %s authenticated as ADMIN\n", client.ip);
+                    client->state = ADMIN;
+                    printf("Client %s authenticated as ADMIN\n", client->ip);
+                    pthread_mutex_lock(&client_mutex);
+                    pthread_mutex_unlock(&client_mutex);
                 } else {
-                    send(client.socket_fd, "[0.0.0.0] Authentication required\n", 34, 0);
+                    send(client->socket_fd, "[0.0.0.0] Authentication required\n", 34, 0);
                     continue;
                 }
-            } else if (strcmp(command, "vote") == 0 && client.state == ADMIN) {
-                printf("Vote initiated by admin %s\n", client.ip);
+            } else if (strcmp(command, "vote") == 0) {
+                printf("Vote initiated by %s\n", client->ip);
                 broadcast_message("[0.0.0.0] vote\n");
                 pthread_mutex_lock(&client_mutex);
-                for (int i = 0; i < client_count; i++) {
-                    if (clients[i].state == SLAVE) {
-                        clients[i].vote_value = 0;
+                for (int i = 0; i < *args->count; i++) {
+                    if (args->clients[i].state != ADMIN) {
+                        args->clients[i].vote_value = 0;
+                        args->clients[i].state = SLAVE;
                     }
                 }
                 pthread_mutex_unlock(&client_mutex);
+            } else if (strcmp(command, "clients") == 0) {
+                if (client->state == ADMIN || client->state == MASTER) {
+                    uint8_t total_length = 0;
+                    for (uint8_t i = 0; i < *args->count; i++) {
+                        total_length += strlen(args->clients[i].ip) + (i > 0 ? 1 : 0);
+                    }
+                    total_length += strlen(client->ip) + 3;
+
+                    char *message = (char *)malloc(total_length);
+
+                    message[0] = '\0';
+                    strcat(message, "[");
+                    strcat(message, client->ip);
+                    strcat(message, "]");
+                    for (uint8_t i = 0; i < *args->count; i++) {
+                        strcat(message, " ");
+                        strcat(message, clients[i].ip);
+                    }
+                    pthread_mutex_unlock(&client_mutex);
+                    broadcast_message(message);
+                    pthread_mutex_unlock(&client_mutex);
+                } else {
+                    send(client->socket_fd, "[0.0.0.0] Unauthorized command\n", 32, 0);
+                }
             } else if (strcmp(command, "move") == 0 || strcmp(command, "stop") == 0 || strcmp(command, "reset") == 0) {
-                if (client.state == ADMIN || client.state == MASTER) {
+                if (client->state == ADMIN || client->state == MASTER) {
                     broadcast_message(buffer);
                 } else {
-                    send(client.socket_fd, "[0.0.0.0] Unauthorized command\n", 32, 0);
+                    send(client->socket_fd, "[0.0.0.0] Unauthorized command\n", 32, 0);
                 }
-            } else if (client.state == SLAVE && strcmp(target_ip, "0.0.0.0") == 0) {
+            } else if (client->state == SLAVE && strcmp(target_ip, "0.0.0.0") == 0) {
                 int vote = atoi(command);
                 if (vote >= 0 && vote <= 255) {
                     pthread_mutex_lock(&client_mutex);
-                    client.vote_value = vote;
-                    printf("Vote from SLAVE %s: %d\n", client.ip, vote);
+                    client->vote_value = vote;
+                    printf("Vote from SLAVE %s: %d\n", client->ip, vote);
                     int all_votes_received = 1;
-                    for (int i = 0; i < client_count; i++) {
-                        if (clients[i].state == SLAVE && clients[i].vote_value == 0) {
+                    for (int i = 0; i < *args->count; i++) {
+                        if (args->clients[i].state == SLAVE && args->clients[i].vote_value == -1) {
                             all_votes_received = 0;
                             break;
                         }
                     }
                     if (all_votes_received) {
+                        printf("Deciding on king (%d current clients)..\n", *args->count);
                         int max_vote = -1;
                         Client *winner = NULL;
-                        for (int i = 0; i < client_count; i++) {
-                            if (clients[i].state == SLAVE && clients[i].vote_value > max_vote) {
-                                max_vote = clients[i].vote_value;
-                                winner = &clients[i];
+                        for (int i = 0; i < *args->count; i++) {
+                            if (args->clients[i].state == SLAVE) {
+                                printf("Client %s has score %d, ", args->clients[i].ip, args->clients[i].vote_value);
+                                if (args->clients[i].vote_value > max_vote) {
+                                    if (max_vote == -1) {
+                                        printf("setting the first score.\n");
+                                    } else {
+                                        printf("beating %s's score of %d.\n", winner->ip, winner->vote_value);
+                                    }
+                                    max_vote = args->clients[i].vote_value;
+                                    winner = &args->clients[i];
+                                } else {
+                                    printf("not beating %s.\n", winner->ip);
+                                }
                             }
                         }
-                        if (winner) {
+                        if (max_vote != -1) {
                             winner->state = MASTER;
-                            has_master = 1;
                             char message[BUFFER_SIZE];
                             snprintf(message, sizeof(message), "[%s] master\n", winner->ip);
+                            pthread_mutex_unlock(&client_mutex);
                             broadcast_message(message);
+                            pthread_mutex_lock(&client_mutex);
                             printf("Crowned: %s\n", winner->ip);
                         }
                     }
@@ -126,14 +171,14 @@ void *handle_client(void *arg) {
         }
     }
 
-    printf("Client disconnected: %s\n", client.ip);
-    close(client.socket_fd);
+    printf("Client disconnected: %s. %d clients remain\n", client->ip, *args->count-1);
+    close(client->socket_fd);
 
     pthread_mutex_lock(&client_mutex);
-    for (int i = 0; i < client_count; i++) {
-        if (clients[i].socket_fd == client.socket_fd) {
-            clients[i] = clients[client_count - 1];
-            client_count--;
+    for (int i = 0; i < *args->count; i++) {
+        if (args->clients[i].socket_fd == client->socket_fd) {
+            args->clients[i] = args->clients[*args->count-1];
+            *args->count -= 1;
             break;
         }
     }
@@ -192,7 +237,7 @@ int main() {
         new_client->socket_fd = client_fd;
         strncpy(new_client->ip, client_ip, INET_ADDRSTRLEN);
         new_client->state = UNAUTHENTICATED;
-        new_client->vote_value = 0;
+        new_client->vote_value = -1;
 
         pthread_mutex_lock(&client_mutex);
         if (client_count < MAX_CLIENTS) {
@@ -200,7 +245,11 @@ int main() {
             pthread_mutex_unlock(&client_mutex);
 
             pthread_t client_thread;
-            pthread_create(&client_thread, NULL, handle_client, (void *)new_client);
+            Args *new_args = malloc(sizeof(Args));
+            new_args->clients = clients;
+            new_args->count = &client_count;
+            new_args->self = client_count - 1;
+            pthread_create(&client_thread, NULL, handle_client, new_args);
             pthread_detach(client_thread);
         } else {
             pthread_mutex_unlock(&client_mutex);
