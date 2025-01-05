@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 
+// Static definitions
 #define PORT 5080
 #define MAX_CLIENTS 128
 #define BUFFER_SIZE 128
@@ -27,6 +28,7 @@ typedef struct {
 
 Client clients[MAX_CLIENTS];
 
+// Struct used to carry the data to threads
 typedef struct {
     Client *clients;
     uint8_t *count;
@@ -56,7 +58,7 @@ Client *get_client_by_ip(const char *ip) {
 
 void *handle_client(void *arg) {
     Args *args = (Args *)arg;
-    Client *client = &(args->clients[args->self]);
+    Client *client = &(args->clients[args->self]); // https://www.youtube.com/watch?v=_u6f9beKbwg
     char buffer[BUFFER_SIZE];
     int bytes_received;
 
@@ -64,6 +66,7 @@ void *handle_client(void *arg) {
 
     while ((bytes_received = recv(client->socket_fd, buffer, BUFFER_SIZE - 1, 0)) > 0) {
         buffer[bytes_received] = '\0';
+        // Lazily sanitize buffer for printing later on.
         if (buffer[bytes_received-1] == '\n') buffer[bytes_received-1] = '\0';
         if (buffer[bytes_received-1] == '\r') buffer[bytes_received-1] = '\0';
         if (buffer[bytes_received-2] == '\n') buffer[bytes_received-2] = '\0';
@@ -75,10 +78,10 @@ void *handle_client(void *arg) {
             if (client->state == UNAUTHENTICATED) {
                 if (strcmp(target_ip, "0.0.0.0") == 0 && strcmp(command, "slave") == 0) {
                     client->state = SLAVE;
-                    printf("Client %s authenticated as SLAVE\n", client->ip);
+                    printf("Client %s authenticated as a slave\n", client->ip);
                 } else if (strcmp(target_ip, "0.0.0.0") == 0 && strcmp(command, "admin") == 0) {
                     client->state = ADMIN;
-                    printf("Client %s authenticated as ADMIN\n", client->ip);
+                    printf("Client %s authenticated an admin\n", client->ip);
                     pthread_mutex_lock(&client_mutex);
                     pthread_mutex_unlock(&client_mutex);
                 } else {
@@ -132,7 +135,7 @@ void *handle_client(void *arg) {
                 if (vote >= 0 && vote <= 255) {
                     pthread_mutex_lock(&client_mutex);
                     client->vote_value = vote;
-                    printf("Vote from SLAVE %s: %d\n", client->ip, vote);
+                    printf("Vote from slave %s: %d\n", client->ip, vote);
                     int all_votes_received = 1;
                     for (int i = 0; i < *args->count; i++) {
                         if (args->clients[i].state == SLAVE && args->clients[i].vote_value == -1) {
@@ -149,18 +152,22 @@ void *handle_client(void *arg) {
                                 printf("Client %s has score %d, ", args->clients[i].ip, args->clients[i].vote_value);
                                 if (args->clients[i].vote_value > max_vote) {
                                     if (max_vote == -1) {
+                                        // From NULL
                                         printf("setting the first score.\n");
                                     } else {
+                                        // > max
                                         printf("beating %s's score of %d.\n", winner->ip, winner->vote_value);
                                     }
                                     max_vote = args->clients[i].vote_value;
                                     winner = &args->clients[i];
                                 } else {
+                                    // <max
                                     printf("not beating %s.\n", winner->ip);
                                 }
                             }
                         }
                         if (max_vote != -1) {
+                            // We have a valid king
                             winner->state = MASTER;
                             char message[BUFFER_SIZE];
                             snprintf(message, sizeof(message), "[%s] master\n", winner->ip);
@@ -179,6 +186,7 @@ void *handle_client(void *arg) {
     printf("Client disconnected: %s. %d clients remain\n", client->ip, *args->count-1);
     close(client->socket_fd);
 
+    // Pop client from list, replacing entry with the last's.
     pthread_mutex_lock(&client_mutex);
     for (int i = 0; i < *args->count; i++) {
         if (args->clients[i].socket_fd == client->socket_fd) {
