@@ -48,14 +48,13 @@ def snx(state: int) -> None:
 
 snx(3)
 
-# Initialize motors
-
+# Init motors
 fl = pwmio.PWMOut(board.IO6, frequency=MOTOR_FREQ, duty_cycle=65535)
 fr = pwmio.PWMOut(board.IO5, frequency=MOTOR_FREQ, duty_cycle=65535)
 bl = pwmio.PWMOut(board.IO4, frequency=MOTOR_FREQ, duty_cycle=65535)
 br = pwmio.PWMOut(board.IO3, frequency=MOTOR_FREQ, duty_cycle=65535)
 
-# Last set state
+# Last set state variables
 fls = 65535
 frs = 65535
 bls = 65535
@@ -243,17 +242,17 @@ if not wifi.radio.connected:
         print("Wifi was not connected!")
         exit(1)
 
-LOCAL_IP = str(wifi.radio.ipv4_address)
+LOCAL_IP = str(wifi.radio.ipv4_address) # Our current IPv4 address
 
 # Socket comms
 pool = SocketPool(wifi.radio)
 sock = pool.socket(pool.AF_INET, pool.SOCK_STREAM)
-sock.settimeout(8)
+sock.settimeout(8) # Connection / Transmission timeout
 
 print("Connecting.. ", end="")
 try:
     snx(4)
-    sock.connect((HOST, 5080))
+    sock.connect((HOST, 5080)) # Connect to server
     snx(3)
 except Exception as err:
     print("FAIL!\n")
@@ -265,9 +264,7 @@ rx_buf = bytearray(512)  # Receive buffer, static allocation
 
 
 def sock_recv():
-    """
-    Receives data from a socket, parses the IPv4 address and the associated data.
-    """
+    # Receives data from the server, parses the IPv4 address and data.
     try:
         size = sock.recv_into(rx_buf)
     except:
@@ -284,10 +281,11 @@ def sock_recv():
 
 
 def sock_send(data: str, target: str = "0.0.0.0") -> int:
+    # Sends a set of data along with an ip header, defaulting to broadcast.
     return sock.send(bytes(f"[{target}] {data}", "UTF-8"))
 
 
-# Terminal muxer
+# Terminal muxer, obsolete
 def terminal_waiting() -> int:
     res = 0
     if usbcon.in_waiting:
@@ -308,22 +306,21 @@ if DEBUG:
 
 # Main program loop
 
-commanding = False  # We are a commanding king node
+commanding = False  # We are king
 sock_send("slave")
 sock_send("vote")
 
 try:
     while True:
-        snx(2)
         try:
             ip, cmd = sock_recv()
-            if ip in ["0.0.0.0", LOCAL_IP]:  # This order is directed to us
+            snx(3)
+            if ip in ["0.0.0.0", LOCAL_IP]:  # Only accept bcast / targetted packets
                 if cmd[0] == "vote":
                     # Give the server a urandom byte
                     sock_send(str(int.from_bytes(urandom(1), "big")))
-                    commanding = False
+                    commanding = False # Reset since a new voting proccess started
                 elif cmd[0] == "master":
-                    # I am king now
                     commanding = True
                     print("I am king!")
                 elif cmd[0] == "forward":
@@ -336,11 +333,9 @@ try:
                     pass
                 else:
                     print(f"Unknown command: {cmd[0]}")
-            else:
-                pass
+            snx(2)
         except TypeError:
             pass
-        snx(3)
 except Exception as err:
     # Catchall, reset if no usb
     if usbcon.connected:
