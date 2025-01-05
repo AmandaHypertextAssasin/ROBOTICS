@@ -64,6 +64,10 @@ void *handle_client(void *arg) {
 
     while ((bytes_received = recv(client->socket_fd, buffer, BUFFER_SIZE - 1, 0)) > 0) {
         buffer[bytes_received] = '\0';
+        if (buffer[bytes_received-1] == '\n') buffer[bytes_received-1] = '\0';
+        if (buffer[bytes_received-1] == '\r') buffer[bytes_received-1] = '\0';
+        if (buffer[bytes_received-2] == '\n') buffer[bytes_received-2] = '\0';
+
         printf("Received from %s: %s\n", client->ip, buffer);
 
         char target_ip[INET_ADDRSTRLEN], command[BUFFER_SIZE], data[BUFFER_SIZE];
@@ -98,7 +102,7 @@ void *handle_client(void *arg) {
                     for (uint8_t i = 0; i < *args->count; i++) {
                         total_length += strlen(args->clients[i].ip) + (i > 0 ? 1 : 0);
                     }
-                    total_length += strlen(client->ip) + 3;
+                    total_length += strlen(client->ip) + 5;
 
                     char *message = (char *)malloc(total_length);
 
@@ -110,6 +114,7 @@ void *handle_client(void *arg) {
                         strcat(message, " ");
                         strcat(message, clients[i].ip);
                     }
+                    strcat(message, "\n");
                     pthread_mutex_unlock(&client_mutex);
                     broadcast_message(message);
                     pthread_mutex_unlock(&client_mutex);

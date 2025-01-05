@@ -147,6 +147,8 @@ def stop() -> None:
     fls = 65535
     bl.duty_cycle = 65535
     bls = 65535
+    if DEBUG:
+        terminal_write("Stopping!\n\r")
 
 
 def move(right: bool, percent: int = 0) -> None:
@@ -324,6 +326,12 @@ try:
                     # I am king now
                     commanding = True
                     print("I am king!")
+                elif cmd[0] == "forward":
+                    forward(int(cmd[1]))
+                elif cmd[0] == "move":
+                    move(bool(int(cmd[1])), int(cmd[2]))
+                elif cmd[0] == "stop":
+                    stop()
                 elif cmd[0] == "Unauthorized":
                     pass
                 else:
