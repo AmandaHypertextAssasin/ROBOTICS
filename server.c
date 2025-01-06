@@ -76,25 +76,25 @@ void *handle_client(void *arg) {
         char target_ip[INET_ADDRSTRLEN], command[BUFFER_SIZE], data[BUFFER_SIZE];
         if (sscanf(buffer, "[%15[^]]] %s %[^\n]", target_ip, command, data) >= 2) {
             if (client->state == UNAUTHENTICATED) {
+                pthread_mutex_lock(&client_mutex);
                 if (strcmp(target_ip, "0.0.0.0") == 0 && strcmp(command, "slave") == 0) {
                     client->state = SLAVE;
                     printf("Client %s authenticated as a slave\n", client->ip);
                 } else if (strcmp(target_ip, "0.0.0.0") == 0 && strcmp(command, "admin") == 0) {
                     client->state = ADMIN;
                     printf("Client %s authenticated an admin\n", client->ip);
-                    pthread_mutex_lock(&client_mutex);
-                    pthread_mutex_unlock(&client_mutex);
                 } else {
                     send(client->socket_fd, "[0.0.0.0] Authentication required\n", 34, 0);
                     continue;
                 }
+                pthread_mutex_unlock(&client_mutex);
             } else if (strcmp(command, "vote") == 0) {
                 printf("Vote initiated by %s\n", client->ip);
                 broadcast_message("[0.0.0.0] vote\n");
                 pthread_mutex_lock(&client_mutex);
                 for (int i = 0; i < *args->count; i++) {
                     if (args->clients[i].state != ADMIN) {
-                        args->clients[i].vote_value = 0;
+                        args->clients[i].vote_value = -1;
                         args->clients[i].state = SLAVE;
                     }
                 }
